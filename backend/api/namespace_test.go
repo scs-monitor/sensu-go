@@ -139,6 +139,44 @@ func TestNamespaceGet(t *testing.T) {
 			wantErr:       false,
 		},
 		{
+			name:      "implicit access through role",
+			namespace: "dev",
+			attrs: &authorization.Attributes{
+				User: corev2.User{
+					Username: "foo",
+					Groups:   []string{"ops"},
+				},
+			},
+			clusterRoles: []*corev2.ClusterRole{
+				{
+					ObjectMeta: corev2.NewObjectMeta("cluster-admin", ""),
+					Rules: []corev2.Rule{
+						{
+							Verbs:     []string{corev2.VerbAll},
+							Resources: []string{corev2.ResourceAll},
+						},
+					},
+				},
+			},
+			roleBindings: []*corev2.RoleBinding{
+				{
+					Subjects: []corev2.Subject{
+						{
+							Type: "Group",
+							Name: "ops",
+						},
+					},
+					RoleRef: corev2.RoleRef{
+						Type: "ClusterRole",
+						Name: "cluster-admin",
+					},
+					ObjectMeta: corev2.NewObjectMeta("ops", "dev"),
+				},
+			},
+			wantNamespace: true,
+			wantErr:       false,
+		},
+		{
 			name:      "explicit access can only be granted via cluster resources",
 			namespace: "dev",
 			attrs: &authorization.Attributes{
