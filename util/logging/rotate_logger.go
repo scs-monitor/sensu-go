@@ -15,11 +15,20 @@ import (
 	"time"
 )
 
-type renameFunc func(string, string) error
-
-var rename renameFunc = os.Rename
-
-type RotateFileWriterConfig struct {
+// RotateFileLoggerConfig is configuration for creating a RotateFileLogger.
+//
+// If Path is not specified, then the log will be created in the current
+// working directory, based on the binary name. (e.g. sensu-backend.log)
+//
+// If MaxSizeBytes is not specified, then each log file segment will have at
+// most 128 MB written to it.
+//
+// If RetentionDuration is not specified, then the logger will retain archived
+// log files for an unlimited duration.
+//
+// If RetentionFiles is not specified, then the logger will retain an unbounded
+// number of archived log files.
+type RotateFileLoggerConfig struct {
 	Path              string
 	MaxSizeBytes      int64
 	RetentionDuration time.Duration
@@ -86,7 +95,7 @@ func (f *rotateFile) Rotate() (*rotateFile, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	if err := rename(currentName, archiveName); err != nil {
+	if err := os.Rename(currentName, archiveName); err != nil {
 		return nil, err
 	}
 	var err error
@@ -137,7 +146,12 @@ func (f *rotateFile) Close() error {
 	return f.file.Close()
 }
 
-type RotateFileWriter struct {
+// RotateFileLogger presents a file-like interface, but dispatches writes to
+// files based on its rotation configuration. Rotated log files are compressed
+// in zip format, as this device is intended to be used for Windows.
+//
+// For information on how to configure RotateFileLogger, see RotateFileLoggerConfig.
+type RotateFileLogger struct {
 	retentionFiles    int64
 	closed            int64
 	retentionDuration time.Duration
@@ -145,7 +159,13 @@ type RotateFileWriter struct {
 	path              string
 }
 
-func NewRotateFileWriter(cfg RotateFileWriterConfig) (*RotateFileWriter, error) {
+// NewRotateFileLogger creates a new configured RotateFileLogger. It opens a
+// file for writing at the path it was configured to use. If there was an error
+// in opening the file for writing, it will be returned.
+//
+// If the logger attempts to open a file that already exists, then its size will
+// be taken into account when doing rotation.
+func NewRotateFileLogger(cfg RotateFileLoggerConfig) (*RotateFileLogger, error) {
 	if cfg.Path == "" {
 		cfg.Path = fmt.Sprintf("%s.log", os.Args[0])
 	}
@@ -153,7 +173,7 @@ func NewRotateFileWriter(cfg RotateFileWriterConfig) (*RotateFileWriter, error) 
 		// 128 MB
 		cfg.MaxSizeBytes = 1 << 27
 	}
-	w := &RotateFileWriter{
+	w := &RotateFileLogger{
 		path:              cfg.Path,
 		retentionDuration: cfg.RetentionDuration,
 		retentionFiles:    cfg.RetentionFiles,
@@ -183,13 +203,23 @@ func NewRotateFileWriter(cfg RotateFileWriterConfig) (*RotateFileWriter, error) 
 	return w, nil
 }
 
-func (r *RotateFileWriter) StartReaper(ctx context.Context, interval time.Duration) <-chan error {
+// StartReaper starts an asynchronous worker that lists the log files written
+// on an interval, and deletes ones that don't meet the retention criteria
+// configured in the RotateFileLoggerConfig.
+//
+// When the supplied context is cancelled, the reaper will stop reaping.
+//
+// Every iteration of reaping will require that the caller consume errors from
+// the provided error channel. If the caller does not consumer the reaper
+// errors, then the reaper will hang. Errors that are delivered to the error
+// channel can be nil.
+func (r *RotateFileLogger) StartReaper(ctx context.Context, interval time.Duration) <-chan error {
 	errors := make(chan error, 1)
 	go r.reapLoop(ctx, errors, interval)
 	return errors
 }
 
-func (r *RotateFileWriter) reapLoop(ctx context.Context, errors chan error, interval time.Duration) {
+func (r *RotateFileLogger) reapLoop(ctx context.Context, errors chan error, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -203,9 +233,9 @@ func (r *RotateFileWriter) reapLoop(ctx context.Context, errors chan error, inte
 	}
 }
 
-func (r *RotateFileWriter) reap() error {
-	base := filepath.Dir(r.path)
-	f, err := os.Open(base)
+func (r *RotateFileLogger) reap() error {
+	dir := filepath.Dir(r.path)
+	f, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
@@ -214,7 +244,8 @@ func (r *RotateFileWriter) reap() error {
 		return err
 	}
 	filesToReap := make([]string, 0, len(files))
-	reapRegexp := regexp.MustCompile(fmt.Sprintf(`^%s\.(\d+)\.zip$`, regexp.QuoteMeta(r.path)))
+	base := filepath.Base(r.path)
+	reapRegexp := regexp.MustCompile(fmt.Sprintf(`^%s\.([0-9]+)\.zip$`, regexp.QuoteMeta(base)))
 	for _, file := range files {
 		if reapRegexp.MatchString(file) {
 			filesToReap = append(filesToReap, file)
@@ -231,7 +262,7 @@ func (r *RotateFileWriter) reap() error {
 			if _, err := fmt.Sscanf(matches[1], "%d", timestamp); err != nil {
 				continue
 			}
-			archiveTime := time.Unix(timestamp, 0)
+			archiveTime := time.Unix(0, timestamp)
 			if archiveTime.Add(r.retentionDuration).Before(time.Now()) {
 				tooOld[file] = true
 				if err := os.Remove(file); err != nil {
@@ -242,7 +273,7 @@ func (r *RotateFileWriter) reap() error {
 	}
 	notTooOld := make([]string, 0, len(filesToReap))
 	for _, file := range filesToReap {
-		if !tooOld[file] {
+		if !tooOld[file] || r.retentionDuration == 0 {
 			notTooOld = append(notTooOld, file)
 		}
 	}
@@ -250,7 +281,7 @@ func (r *RotateFileWriter) reap() error {
 		sort.Strings(notTooOld)
 		toRemove := notTooOld[r.retentionFiles:]
 		for _, file := range toRemove {
-			if err := os.Remove(file); err != nil {
+			if err := os.Remove(filepath.Join(dir, file)); err != nil {
 				return err
 			}
 		}
@@ -258,7 +289,12 @@ func (r *RotateFileWriter) reap() error {
 	return nil
 }
 
-func (r *RotateFileWriter) Write(p []byte) (int, error) {
+// Write writes its argument to the file that is indicated by the Path field of
+// RotateFileLoggerConfig. If the write would cause the file to grow beyond the
+// bounds of its maximum size, then the call blocks until the existing log file
+// can be moved to a new location, and the path can be opened again as a new
+// file.
+func (r *RotateFileLogger) Write(p []byte) (int, error) {
 	writer := r.container.Load().(*rotateFile)
 	n, err := writer.Write(p)
 	if err == os.ErrClosed {
@@ -270,7 +306,9 @@ func (r *RotateFileWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (r *RotateFileWriter) Close() error {
+// Close closes the currently opened log file. Calling Write after Close will
+// result in an error.
+func (r *RotateFileLogger) Close() error {
 	atomic.StoreInt64(&r.closed, 1)
 	return r.container.Load().(*rotateFile).Close()
 }

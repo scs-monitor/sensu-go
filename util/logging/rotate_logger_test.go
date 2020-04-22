@@ -2,6 +2,7 @@ package logging
 
 import (
 	"archive/zip"
+	"context"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"time"
 )
 
-func TestRotateFileWriter(t *testing.T) {
+func TestRotateFileLogger(t *testing.T) {
 	td, err := ioutil.TempDir("", "")
 	if err != nil {
 		t.Fatal(err)
@@ -25,16 +26,16 @@ func TestRotateFileWriter(t *testing.T) {
 	writeWg.Add(100)
 	wg.Add(99)
 
-	config := RotateFileWriterConfig{
+	config := RotateFileLoggerConfig{
 		Path:           logPath,
 		MaxSizeBytes:   1024,
-		RetentionFiles: 100,
+		RetentionFiles: 10,
 		// sync is to cause the writer to block on zipping the file, which is
 		// useful for testing, but not desirable for production use.
 		sync: true,
 	}
 
-	writer, err := NewRotateFileWriter(config)
+	writer, err := NewRotateFileLogger(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +72,7 @@ func TestRotateFileWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_ = dir.Close()
 	if got, want := len(names), 50; got != want {
 		t.Errorf("wrong number of log files: got %d, want %d", got, want)
 	}
@@ -92,8 +94,25 @@ func TestRotateFileWriter(t *testing.T) {
 		if got, want := int(zipfile.File[0].UncompressedSize), 1024; got != want {
 			t.Errorf("file %d: bad uncompressed size: got %d, want %d", i, got, want)
 		}
+		_ = zipfile.Close()
 	}
-	// ctx, cancel = context.WithCancel(context.Background())
-	// ch := writer.StartReaper(ctx, time.Millisecond*100)
-
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := writer.StartReaper(ctx, time.Millisecond*100)
+	if err := <-ch; err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	dir, err = os.Open(td)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, err = dir.Readdirnames(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = dir.Close()
+	if got, want := len(names), 11; got != want {
+		// 10 zipped files plus sensu.log
+		t.Fatalf("wrong number of log files: got %d, want %d", got, want)
+	}
 }
