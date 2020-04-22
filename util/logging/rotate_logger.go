@@ -28,17 +28,30 @@ type RotateFileWriterConfig struct {
 	sync bool // for testing only
 }
 
-func (f *fileReplacer) archive(archiveName string) error {
+func (f *rotateFile) archive(currentName, archiveName string) (err error) {
+	defer func() {
+		e := os.Remove(archiveName)
+		if err == nil {
+			err = e
+		}
+	}()
 	reader, err := os.Open(archiveName)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		e := reader.Close()
+		if err == nil {
+			err = e
+		}
+	}()
 	zipFile, err := os.Create(archiveName + ".zip")
 	if err != nil {
 		return err
 	}
 	defer zipFile.Close()
 	zipper := zip.NewWriter(zipFile)
+	defer zipper.Close()
 	zipWriter, err := zipper.Create(archiveName)
 	if err != nil {
 		return err
@@ -46,40 +59,35 @@ func (f *fileReplacer) archive(archiveName string) error {
 	if _, err := io.Copy(zipWriter, reader); err != nil {
 		return err
 	}
-	if err := zipper.Flush(); err != nil {
-		return err
-	}
-	if err := os.Remove(archiveName); err != nil {
-		return err
-	}
 	return nil
 }
 
-type fileReplacer struct {
+type rotateFile struct {
 	count     int64
 	max       int64
 	once      sync.Once
+	wg        sync.WaitGroup
 	container *atomic.Value
 	file      *os.File
 	sync      bool // only for testing purposes
 }
 
-func (f *fileReplacer) Rotate() (*fileReplacer, error) {
+func (f *rotateFile) Rotate() (*rotateFile, error) {
 	now := time.Now().UnixNano()
 	currentName := f.file.Name()
 	archiveName := fmt.Sprintf("%s.%d", currentName, now)
 
-	if err := f.file.Close(); err != nil {
-		return nil, err
-	}
-
-	if err := rename(currentName, archiveName); err != nil {
-		return f, err
-	}
-	replacement := &fileReplacer{
+	replacement := &rotateFile{
 		max:       f.max,
 		container: f.container,
 		sync:      f.sync,
+	}
+	f.wg.Wait()
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := rename(currentName, archiveName); err != nil {
+		return nil, err
 	}
 	var err error
 	replacement.file, err = os.OpenFile(currentName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
@@ -88,28 +96,28 @@ func (f *fileReplacer) Rotate() (*fileReplacer, error) {
 	}
 
 	if f.sync {
-		fmt.Println("!")
-		if err := f.archive(archiveName); err != nil {
+		if err := f.archive(currentName, archiveName); err != nil {
 			return nil, err
 		}
 	} else {
-		fmt.Println("?")
 		// archiver errors are silently ignored in production,
 		// as there is nothing that can be done about them.
-		go f.archive(archiveName)
+		go f.archive(currentName, archiveName)
 	}
 
 	return replacement, nil
 }
 
-func (f *fileReplacer) Write(p []byte) (int, error) {
+func (f *rotateFile) Write(p []byte) (int, error) {
 	projected := atomic.AddInt64(&f.count, int64(len(p)))
 	if projected <= f.max {
+		f.wg.Add(1)
+		defer f.wg.Done()
 		return f.file.Write(p)
 	}
 	var err error
 	f.once.Do(func() {
-		var fr *fileReplacer
+		var fr *rotateFile
 		fr, err = f.Rotate()
 		if err == nil {
 			f.container.Store(fr)
@@ -118,14 +126,14 @@ func (f *fileReplacer) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("error rotating log: %s", err)
 	}
-	replacement := f.container.Load().(*fileReplacer)
+	replacement := f.container.Load().(*rotateFile)
 	if replacement == f {
 		return 0, errors.New("error rotating log")
 	}
 	return replacement.Write(p)
 }
 
-func (f *fileReplacer) Close() error {
+func (f *rotateFile) Close() error {
 	return f.file.Close()
 }
 
@@ -164,7 +172,7 @@ func NewRotateFileWriter(cfg RotateFileWriterConfig) (*RotateFileWriter, error) 
 	if ferr != nil {
 		err = ferr
 	}
-	fr := &fileReplacer{
+	fr := &rotateFile{
 		file:      f,
 		max:       cfg.MaxSizeBytes,
 		count:     count,
@@ -251,11 +259,18 @@ func (r *RotateFileWriter) reap() error {
 }
 
 func (r *RotateFileWriter) Write(p []byte) (int, error) {
-	writer := r.container.Load().(*fileReplacer)
-	return writer.Write(p)
+	writer := r.container.Load().(*rotateFile)
+	n, err := writer.Write(p)
+	if err == os.ErrClosed {
+		if atomic.LoadInt64(&r.closed) == 0 {
+			// The file was closed for rotation, write to the next one
+			return r.Write(p)
+		}
+	}
+	return n, err
 }
 
 func (r *RotateFileWriter) Close() error {
 	atomic.StoreInt64(&r.closed, 1)
-	return r.container.Load().(*fileReplacer).Close()
+	return r.container.Load().(*rotateFile).Close()
 }
