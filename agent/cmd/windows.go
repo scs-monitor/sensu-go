@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sensu/sensu-go/util/logging"
 	"github.com/sensu/sensu-go/util/path"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -18,7 +20,10 @@ const (
 	serviceDescription = "The monitoring agent for sensu-go (https://sensu.io)"
 	serviceUser        = "LocalSystem"
 
-	flagLogPath = "log-file"
+	flagLogPath              = "log-file"
+	flagLogMaxSize           = "log-max-size"
+	flagLogRetentionDuration = "log-retention-duration"
+	flagLogRetentionFiles    = "log-retention-files"
 )
 
 // NewWindowsServiceCommand creates a cobra command that offers subcommands
@@ -58,21 +63,25 @@ func NewWindowsInstallServiceCommand() *cobra.Command {
 				return errors.New("error reading config file: not a regular file")
 			}
 
-			logFile := cmd.Flag(flagLogPath).Value.String()
-			lp, err := filepath.Abs(logFile)
+			logPath := viper.GetString(flagLogPath)
+			maxSize := viper.GetSizeInBytes(flagLogMaxSize)
+			if maxSize == 0 {
+				return fmt.Errorf("invalid max size: %s", viper.GetString(flagLogMaxSize))
+			}
+			retentionDuration := viper.GetDuration(flagLogRetentionDuration)
+			retentionFiles := viper.GetInt64(flagLogRetentionFiles)
+			cfg := logging.RotateFileLoggerConfig{
+				Path:              logPath,
+				MaxSizeBytes:      int64(maxSize),
+				RetentionDuration: retentionDuration,
+				RetentionFiles:    retentionFiles,
+			}
+			logWriter, err := logging.NewRotateFileLogger(cfg)
 			if err != nil {
 				return fmt.Errorf("error reading log file: %s", err)
-			}
-			os.OpenFile(lp, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-			lfi, err := os.Stat(lp)
-			if err != nil {
-				return fmt.Errorf("error reading log file: %s", err)
-			}
-			if !lfi.Mode().IsRegular() {
-				return errors.New("error reading log file: not a regular file")
 			}
 
-			return installService(serviceName, serviceDisplayName, serviceDescription, "service", "run", configFile, logFile)
+			return installService(serviceName, serviceDisplayName, serviceDescription, "service", "run", configFile, logWriter)
 		},
 	}
 
@@ -81,6 +90,9 @@ func NewWindowsInstallServiceCommand() *cobra.Command {
 
 	cmd.Flags().StringP(flagConfigFile, "c", defaultConfigPath, "path to sensu-agent config file")
 	cmd.Flags().StringP(flagLogPath, "", defaultLogPath, "path to the sensu-agent log file")
+	cmd.Flags().StringP(flagLogMaxSize, "", "128 MB", "maximum size of log file")
+	cmd.Flags().StringP(flagLogRetentionDuration, "", "168h", "log file retention duration (s, m, h)")
+	cmd.Flags().Int64P(flagLogRetentionFiles, "", 10, "maximum number of archived files to retain")
 
 	return cmd
 }
