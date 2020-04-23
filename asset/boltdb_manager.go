@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 
 	corev2 "github.com/sensu/sensu-go/api/core/v2"
+	"github.com/sensu/sensu-go/util/retry"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -116,22 +118,39 @@ func (b *boltDBAssetManager) Get(ctx context.Context, asset *corev2.Asset) (*Run
 			}
 		}
 
-		// install the asset
-		tmpFile, err := b.fetcher.Fetch(ctx, asset.URL, asset.Headers)
+		backoff := retry.ExponentialBackoff{
+			InitialDelayInterval: 10 * time.Second,
+			MaxRetryAttempts:     4,
+			Multiplier:           2,
+			Ctx:                  ctx,
+		}
+
+		var assetPath string
+		err = backoff.Retry(func(int) (bool, error) {
+			// install the asset
+			tmpFile, err := b.fetcher.Fetch(ctx, asset.URL, asset.Headers)
+			if err != nil {
+				logger.WithError(err).WithField("name", asset.Name).Error("error fetching asset")
+				return false, nil
+			}
+			defer tmpFile.Close()
+			defer os.Remove(tmpFile.Name())
+
+			// verify
+			if err := b.verifier.Verify(tmpFile, asset.Sha512); err != nil {
+				logger.WithError(err).WithField("name", asset.Name).Error("error verifying asset")
+				return false, nil
+			}
+
+			// expand
+			assetPath = filepath.Join(b.localStorage, asset.Sha512)
+			if err := b.expander.Expand(tmpFile, assetPath); err != nil {
+				logger.WithError(err).WithField("name", asset.Name).Error("error expanding asset")
+				return false, nil
+			}
+			return true, nil
+		})
 		if err != nil {
-			return err
-		}
-		defer tmpFile.Close()
-		defer os.Remove(tmpFile.Name())
-
-		// verify
-		if err := b.verifier.Verify(tmpFile, asset.Sha512); err != nil {
-			return err
-		}
-
-		// expand
-		assetPath := filepath.Join(b.localStorage, asset.Sha512)
-		if err := b.expander.Expand(tmpFile, assetPath); err != nil {
 			return err
 		}
 

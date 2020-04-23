@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"time"
 
 	"github.com/sensu/sensu-go/asset"
@@ -15,6 +16,7 @@ import (
 // Pipeline takes events as inputs, and treats them in various ways according
 // to the event's check configuration.
 type Pipeline struct {
+	ctx                    context.Context
 	store                  store.Store
 	assetGetter            asset.Getter
 	extensionExecutor      ExtensionExecutorGetterFunc
@@ -36,8 +38,9 @@ type Config struct {
 type Option func(*Pipeline)
 
 // New creates a new Pipeline from the provided configuration.
-func New(c Config, options ...Option) *Pipeline {
+func New(ctx context.Context, c Config, options ...Option) *Pipeline {
 	pipeline := &Pipeline{
+		ctx:                    ctx,
 		store:                  c.Store,
 		assetGetter:            c.AssetGetter,
 		extensionExecutor:      c.ExtensionExecutorGetter,

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -33,7 +34,7 @@ func TestHelperMutatorProcess(t *testing.T) {
 }
 
 func TestPipelineMutate(t *testing.T) {
-	p := New(Config{})
+	p := New(context.Background(), Config{})
 
 	handler := types.FakeHandlerCommand("cat")
 	handler.Type = "pipe"
@@ -49,7 +50,7 @@ func TestPipelineMutate(t *testing.T) {
 }
 
 func TestPipelineJsonMutator(t *testing.T) {
-	p := New(Config{})
+	p := New(context.Background(), Config{})
 
 	event := &types.Event{}
 
@@ -62,7 +63,7 @@ func TestPipelineJsonMutator(t *testing.T) {
 }
 
 func TestPipelineOnlyCheckOutputMutator(t *testing.T) {
-	p := New(Config{})
+	p := New(context.Background(), Config{})
 
 	event := &types.Event{}
 	event.Check = &types.Check{}
@@ -75,7 +76,7 @@ func TestPipelineOnlyCheckOutputMutator(t *testing.T) {
 }
 
 func TestPipelineOnlyCheckOutputMutate(t *testing.T) {
-	p := New(Config{})
+	p := New(context.Background(), Config{})
 
 	handler := types.FakeHandlerCommand("cat")
 	handler.Type = "pipe"
@@ -107,7 +108,7 @@ func TestPipelineExtensionMutator(t *testing.T) {
 		return m, nil
 	}
 
-	p := New(Config{ExtensionExecutorGetter: getter, Store: store})
+	p := New(context.Background(), Config{ExtensionExecutorGetter: getter, Store: store})
 
 	handler := &types.Handler{}
 	handler.Mutator = "extension"
@@ -118,7 +119,7 @@ func TestPipelineExtensionMutator(t *testing.T) {
 }
 
 func TestPipelinePipeMutator(t *testing.T) {
-	p := New(Config{SecretsProviderManager: secrets.NewProviderManager()})
+	p := New(context.Background(), Config{SecretsProviderManager: secrets.NewProviderManager()})
 
 	mutator := types.FakeMutatorCommand("cat")
 

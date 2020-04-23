@@ -28,6 +28,7 @@ type ExtensionExecutorGetterFunc func(*corev2.Extension) (rpc.ExtensionExecutor,
 // handler configuration determines which Sensu filters and mutator
 // are used.
 type Pipelined struct {
+	ctx                    context.Context
 	assetGetter            asset.Getter
 	stopping               chan struct{}
 	running                *atomic.Value
@@ -60,7 +61,7 @@ type Config struct {
 type Option func(*Pipelined) error
 
 // New creates a new Pipelined with supplied Options applied.
-func New(c Config, options ...Option) (*Pipelined, error) {
+func New(ctx context.Context, c Config, options ...Option) (*Pipelined, error) {
 	if c.BufferSize == 0 {
 		logger.Warn("BufferSize not configured")
 		c.BufferSize = 1
@@ -75,6 +76,7 @@ func New(c Config, options ...Option) (*Pipelined, error) {
 	}
 
 	p := &Pipelined{
+		ctx:                    ctx,
 		store:                  c.Store,
 		bus:                    c.Bus,
 		extensionExecutor:      c.ExtensionExecutorGetter,
@@ -143,13 +145,15 @@ func (p *Pipelined) Name() string {
 // and for handling them.
 func (p *Pipelined) createPipelines(count int, channel chan interface{}) {
 	for i := 1; i <= count; i++ {
-		pipeline := pipeline.New(pipeline.Config{
-			Store:                   p.store,
-			ExtensionExecutorGetter: p.extensionExecutor,
-			AssetGetter:             p.assetGetter,
-			StoreTimeout:            p.storeTimeout,
-			SecretsProviderManager:  p.secretsProviderManager,
-		})
+		pipeline := pipeline.New(
+			p.ctx,
+			pipeline.Config{
+				Store:                   p.store,
+				ExtensionExecutorGetter: p.extensionExecutor,
+				AssetGetter:             p.assetGetter,
+				StoreTimeout:            p.storeTimeout,
+				SecretsProviderManager:  p.secretsProviderManager,
+			})
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()

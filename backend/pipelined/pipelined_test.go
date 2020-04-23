@@ -2,6 +2,7 @@
 package pipelined
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -18,7 +19,7 @@ func TestPipelined(t *testing.T) {
 	require.NoError(t, bus.Start())
 	store := &mockstore.MockStore{}
 
-	p, err := New(Config{Bus: bus, Store: store})
+	p, err := New(context.Background(), Config{Bus: bus, Store: store})
 	require.NoError(t, err)
 	require.NoError(t, p.Start())
 

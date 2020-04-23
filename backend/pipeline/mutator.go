@@ -154,7 +154,7 @@ func (p *Pipeline) pipeMutator(mutator *corev2.Mutator, event *corev2.Event) ([]
 		// Fetch and install all assets required for handler execution
 		matchedAssets := asset.GetAssets(ctx, p.store, mutator.RuntimeAssets)
 
-		assets, err := asset.GetAll(context.TODO(), p.assetGetter, matchedAssets)
+		assets, err := asset.GetAll(p.ctx, p.assetGetter, matchedAssets)
 		if err != nil {
 			logger.WithFields(fields).WithError(err).Error("failed to retrieve assets for mutator")
 		} else {

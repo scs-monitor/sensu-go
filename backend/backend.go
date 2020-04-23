@@ -237,16 +237,18 @@ func Initialize(ctx context.Context, config *Config) (*Backend, error) {
 	b.SecretsProviderManager = secrets.NewProviderManager()
 
 	// Initialize pipelined
-	pipeline, err := pipelined.New(pipelined.Config{
-		Store:                   stor,
-		Bus:                     bus,
-		ExtensionExecutorGetter: rpc.NewGRPCExtensionExecutor,
-		AssetGetter:             assetGetter,
-		BufferSize:              viper.GetInt(FlagPipelinedBufferSize),
-		WorkerCount:             viper.GetInt(FlagPipelinedWorkers),
-		StoreTimeout:            2 * time.Minute,
-		SecretsProviderManager:  b.SecretsProviderManager,
-	})
+	pipeline, err := pipelined.New(
+		b.runCtx,
+		pipelined.Config{
+			Store:                   stor,
+			Bus:                     bus,
+			ExtensionExecutorGetter: rpc.NewGRPCExtensionExecutor,
+			AssetGetter:             assetGetter,
+			BufferSize:              viper.GetInt(FlagPipelinedBufferSize),
+			WorkerCount:             viper.GetInt(FlagPipelinedWorkers),
+			StoreTimeout:            2 * time.Minute,
+			SecretsProviderManager:  b.SecretsProviderManager,
+		})
 	if err != nil {
 		return nil, fmt.Errorf("error initializing %s: %s", pipeline.Name(), err)
 	}
